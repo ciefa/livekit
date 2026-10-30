@@ -1246,11 +1246,25 @@ func (conf *Config) updateFromCLI(c *cli.Command, baseFlags []cli.Flag) error {
 	if c.IsSet("turn-key") {
 		conf.TURN.KeyFile = c.String("turn-key")
 	}
+	// node-ip and udp-port replace the YAML value, so parse them into a fresh value:
+	// UnmarshalString merges into what is already set.
 	if c.IsSet("node-ip") {
-		conf.RTC.NodeIP.UnmarshalString(c.String("node-ip"))
+		var nodeIP rtcconfig.NodeIP
+		if err := nodeIP.UnmarshalString(c.String("node-ip")); err != nil {
+			return fmt.Errorf("could not parse node-ip %q: %w", c.String("node-ip"), err)
+		}
+		if !nodeIP.IsEmpty() {
+			conf.RTC.NodeIP = nodeIP
+		}
 	}
 	if c.IsSet("udp-port") {
-		conf.RTC.UDPPort.UnmarshalString(c.String("udp-port"))
+		var udpPort rtcconfig.PortRange
+		if err := udpPort.UnmarshalString(c.String("udp-port")); err != nil {
+			return fmt.Errorf("could not parse udp-port %q: %w", c.String("udp-port"), err)
+		}
+		if udpPort.Valid() {
+			conf.RTC.UDPPort = udpPort
+		}
 	}
 	if c.IsSet("bind") {
 		conf.BindAddresses = c.StringSlice("bind")

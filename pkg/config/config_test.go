@@ -26,6 +26,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v3"
 
+	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
+
 	"github.com/livekit/livekit-server/pkg/config/configtest"
 	"github.com/livekit/livekit-server/pkg/sfu/pacer"
 )
@@ -201,6 +203,121 @@ func TestGeneratedNarrowNumericFlags(t *testing.T) {
 			require.ErrorContains(t, err, env)
 		})
 	}
+}
+
+// runWithBaseFlags runs a command with the node-ip and udp-port flags, as cmd/server
+// declares them, so that flag and env var values are parsed.
+func runWithBaseFlags(t *testing.T, confString string, args ...string) (*Config, error) {
+	baseFlags := []cli.Flag{
+		&cli.StringFlag{Name: "node-ip", Sources: cli.EnvVars("NODE_IP")},
+		&cli.StringFlag{Name: "udp-port", Sources: cli.EnvVars("UDP_PORT")},
+	}
+
+	var conf *Config
+	c := &cli.Command{
+		Name:  "test",
+		Flags: baseFlags,
+		Action: func(_ context.Context, c *cli.Command) error {
+			var err error
+			conf, err = NewConfig(confString, true, c, baseFlags)
+			return err
+		},
+	}
+	err := c.Run(context.Background(), append([]string{"test"}, args...))
+	return conf, err
+}
+
+func TestNodeIPFlag(t *testing.T) {
+	const yamlNodeIP = `
+rtc:
+  node_ip: 198.51.100.1
+  use_external_ip: false
+`
+
+	t.Run("env var overrides yaml", func(t *testing.T) {
+		t.Setenv("NODE_IP", "203.0.113.10")
+		conf, err := runWithBaseFlags(t, yamlNodeIP)
+		require.NoError(t, err)
+		require.Equal(t, rtcconfig.NodeIP{V4: "203.0.113.10"}, conf.RTC.NodeIP)
+	})
+
+	t.Run("flag overrides yaml", func(t *testing.T) {
+		conf, err := runWithBaseFlags(t, yamlNodeIP, "--node-ip=203.0.113.10")
+		require.NoError(t, err)
+		require.Equal(t, rtcconfig.NodeIP{V4: "203.0.113.10"}, conf.RTC.NodeIP)
+	})
+
+	t.Run("both families", func(t *testing.T) {
+		for _, value := range []string{"203.0.113.10,2001:db8::1", "2001:db8::1,203.0.113.10"} {
+			t.Setenv("NODE_IP", value)
+			conf, err := runWithBaseFlags(t, yamlNodeIP)
+			require.NoError(t, err)
+			require.Equal(t, rtcconfig.NodeIP{V4: "203.0.113.10", V6: "2001:db8::1"}, conf.RTC.NodeIP, value)
+		}
+	})
+
+	t.Run("ipv6 only replaces yaml ipv4", func(t *testing.T) {
+		t.Setenv("NODE_IP", "2001:db8::1")
+		conf, err := runWithBaseFlags(t, yamlNodeIP)
+		require.NoError(t, err)
+		require.Equal(t, rtcconfig.NodeIP{V6: "2001:db8::1"}, conf.RTC.NodeIP)
+	})
+
+	t.Run("empty env var keeps yaml", func(t *testing.T) {
+		t.Setenv("NODE_IP", "")
+		conf, err := runWithBaseFlags(t, yamlNodeIP)
+		require.NoError(t, err)
+		require.Equal(t, rtcconfig.NodeIP{V4: "198.51.100.1"}, conf.RTC.NodeIP)
+	})
+
+	t.Run("no yaml node_ip", func(t *testing.T) {
+		t.Setenv("NODE_IP", "203.0.113.10")
+		conf, err := runWithBaseFlags(t, "rtc:\n  use_external_ip: false\n")
+		require.NoError(t, err)
+		require.Equal(t, rtcconfig.NodeIP{V4: "203.0.113.10"}, conf.RTC.NodeIP)
+	})
+
+	t.Run("invalid value", func(t *testing.T) {
+		t.Setenv("NODE_IP", "203.0.113.10/32")
+		_, err := runWithBaseFlags(t, yamlNodeIP)
+		require.ErrorContains(t, err, `node-ip "203.0.113.10/32"`)
+	})
+}
+
+func TestUDPPortFlag(t *testing.T) {
+	const yamlUDPPortRange = `
+rtc:
+  node_ip: 198.51.100.1
+  use_external_ip: false
+  udp_port: 7882-7892
+`
+
+	t.Run("single port replaces yaml range", func(t *testing.T) {
+		t.Setenv("UDP_PORT", "7885")
+		conf, err := runWithBaseFlags(t, yamlUDPPortRange)
+		require.NoError(t, err)
+		require.Equal(t, rtcconfig.PortRange{Start: 7885}, conf.RTC.UDPPort)
+		require.Equal(t, []int{7885}, conf.RTC.UDPPort.ToSlice())
+	})
+
+	t.Run("range replaces yaml range", func(t *testing.T) {
+		conf, err := runWithBaseFlags(t, yamlUDPPortRange, "--udp-port=7885-7890")
+		require.NoError(t, err)
+		require.Equal(t, rtcconfig.PortRange{Start: 7885, End: 7890}, conf.RTC.UDPPort)
+	})
+
+	t.Run("empty env var keeps yaml", func(t *testing.T) {
+		t.Setenv("UDP_PORT", "")
+		conf, err := runWithBaseFlags(t, yamlUDPPortRange)
+		require.NoError(t, err)
+		require.Equal(t, rtcconfig.PortRange{Start: 7882, End: 7892}, conf.RTC.UDPPort)
+	})
+
+	t.Run("invalid value", func(t *testing.T) {
+		t.Setenv("UDP_PORT", "abc")
+		_, err := runWithBaseFlags(t, yamlUDPPortRange)
+		require.ErrorContains(t, err, `udp-port "abc"`)
+	})
 }
 
 // numericCLIFlag also covers kinds that no config field uses yet (int8, int16, uint),
